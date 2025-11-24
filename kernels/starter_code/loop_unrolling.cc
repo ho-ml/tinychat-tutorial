@@ -24,17 +24,21 @@ void MatmulOperator::mat_mul_loop_unrolling(struct matmul_params *params) {
             float acc1 = 0;
             float acc2 = 0;
             float acc3 = 0;
+            
             // Compute each block
             for (int ch = 0; ch < k;) {
                 // pointer of the int8 activation
-                const signed char *a_int8 = &A->int8_data_ptr[row * k + ch];
+                const int8_t *a_int8 = &A->int8_data_ptr[row * k + ch];
+
                 // pointer of the int4 weights
                 uint8_t *w0_int4 = &B->int4_data_ptr[(col * k + ch) / 2];
                 uint8_t *w1_int4 = &B->int4_data_ptr[((col + 1) * k + ch) / 2];
                 uint8_t *w2_int4 = &B->int4_data_ptr[((col + 2) * k + ch) / 2];
                 uint8_t *w3_int4 = &B->int4_data_ptr[((col + 3) * k + ch) / 2];
+
                 // scale of activation
                 float s_a = params->A_scales[(row * k + ch) / block_size];
+
                 // scale of weight
                 float s_w0 = params->scales[(col * k + ch) / block_size];
                 float s_w1 = params->scales[((col + 1) * k + ch) / block_size];
@@ -54,10 +58,31 @@ void MatmulOperator::mat_mul_loop_unrolling(struct matmul_params *params) {
                 // intermediate variable to store sum of integer multiplication and accumulation
                 int intermediate_sum0 = 0, intermediate_sum1 = 0, intermediate_sum2 = 0, intermediate_sum3 = 0;
                 for (int qj = 0; qj < 16; qj++) {
-                    // TODO: decode a packed byte into two int8 in the range of (-8, 7)
+                    // load a packed byte
+                    uint8_t packed_int4_0 = w0_int4[qj];
+                    uint8_t packed_int4_1 = w1_int4[qj];
+                    uint8_t packed_int4_2 = w2_int4[qj];
+                    uint8_t packed_int4_3 = w3_int4[qj];
 
-                    // TODO: int8 multiply and accumulate operation
+                    // decode low 4 bits into sint8
+                    int8_t w0_de_0 = (packed_int4_0 & 0x0F) - 8;
+                    int8_t w1_de_0 = (packed_int4_1 & 0x0F) - 8;
+                    int8_t w2_de_0 = (packed_int4_2 & 0x0F) - 8;
+                    int8_t w3_de_0 = (packed_int4_3 & 0x0F) - 8;
+
+                    // decode high 4 bits into sint8
+                    int8_t w0_de_16 = (packed_int4_0 >> 4) - 8;
+                    int8_t w1_de_16 = (packed_int4_1 >> 4) - 8;
+                    int8_t w2_de_16 = (packed_int4_2 >> 4) - 8;
+                    int8_t w3_de_16 = (packed_int4_3 >> 4) - 8;
+                    
+                    // int8 multiply and accumulatation
+                    intermediate_sum0 += (a_int8[qj] * w0_de_0 + a_int8[qj + 16] * w0_de_16);
+                    intermediate_sum1 += (a_int8[qj] * w1_de_0 + a_int8[qj + 16] * w1_de_16);
+                    intermediate_sum2 += (a_int8[qj] * w2_de_0 + a_int8[qj + 16] * w2_de_16);
+                    intermediate_sum3 += (a_int8[qj] * w3_de_0 + a_int8[qj + 16] * w3_de_16);
                 }
+
                 // dequantize the sum into floating point
                 acc0 += (float)intermediate_sum0 * s_a * s_w0;
                 acc1 += (float)intermediate_sum1 * s_a * s_w1;
@@ -87,10 +112,38 @@ void MatmulOperator::mat_mul_loop_unrolling(struct matmul_params *params) {
                 int intermediate_sum0_2nd = 0, intermediate_sum1_2nd = 0, intermediate_sum2_2nd = 0,
                     intermediate_sum3_2nd = 0;
                 for (int qj = 0; qj < 32; qj++) {
-                    // TODO: decode a packed byte into two int8 in the range of (-8, 7)
+                    // load a packed byte
+                    uint8_t packed_int4_0 = w0_int4[qj];
+                    uint8_t packed_int4_1 = w1_int4[qj];
+                    uint8_t packed_int4_2 = w2_int4[qj];
+                    uint8_t packed_int4_3 = w3_int4[qj];
 
-                    // TODO: int8 multiply and accumulate operation
+                    // decode low 4 bits into sint8
+                    int8_t w0_de_0 = (packed_int4_0 & 0x0F) - 8;
+                    int8_t w1_de_0 = (packed_int4_1 & 0x0F) - 8;
+                    int8_t w2_de_0 = (packed_int4_2 & 0x0F) - 8;
+                    int8_t w3_de_0 = (packed_int4_3 & 0x0F) - 8;
+
+                    // decode high 4 bits into sint8
+                    int8_t w0_de_32 = (packed_int4_0 >> 4) - 8;
+                    int8_t w1_de_32 = (packed_int4_1 >> 4) - 8;
+                    int8_t w2_de_32 = (packed_int4_2 >> 4) - 8;
+                    int8_t w3_de_32 = (packed_int4_3 >> 4) - 8;
+                    
+                    // int8 multiply and accumulatation
+                    // block 1
+                    intermediate_sum0 += a_int8[qj] * w0_de_0;
+                    intermediate_sum1 += a_int8[qj] * w1_de_0;
+                    intermediate_sum2 += a_int8[qj] * w2_de_0;
+                    intermediate_sum3 += a_int8[qj] * w3_de_0;
+                    
+                    // block 2
+                    intermediate_sum0_2nd += a_int8[qj + 32] * w0_de_32;
+                    intermediate_sum1_2nd += a_int8[qj + 32] * w1_de_32;
+                    intermediate_sum2_2nd += a_int8[qj + 32] * w2_de_32;
+                    intermediate_sum3_2nd += a_int8[qj + 32] * w3_de_32;
                 }
+                
                 // dequantize the sum into floating point
                 acc0 += (float)intermediate_sum0 * s_a * s_w0;
                 acc0 += (float)intermediate_sum0_2nd * s_a_2nd * s_w0_2nd;

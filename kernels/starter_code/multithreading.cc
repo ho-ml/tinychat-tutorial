@@ -7,10 +7,12 @@
 
 #include "../matmul.h"
 #include "common.h"
+
 struct multithreading_thread_args {
     int start, end;
     const struct matmul_params* params;
 };
+
 static void* multithreading_worker_func(void* args) {
     struct multithreading_thread_args* mat_args = (struct multithreading_thread_args*)args;
     const struct matmul_params* params = mat_args->params;
@@ -22,12 +24,13 @@ static void* multithreading_worker_func(void* args) {
     for (int row = 0; row < m; row++) {
         for (int col = mat_args->start; col < mat_args->end; col++) {
             float acc = 0;
+
             // Compute each block
             for (int ch = 0; ch < k;) {
                 // pointer of the int4 weights
                 uint8_t* w_int4 = &B->int4_data_ptr[(col * k + ch) / 2];
                 // pointer of the int8 activation
-                const signed char* a_int8 = &A->int8_data_ptr[row * k + ch];
+                const int8_t* a_int8 = &A->int8_data_ptr[row * k + ch];
                 // scale of weight
                 float s_w = params->scales[(col * k + ch) / block_size];
                 // scale of activation
@@ -49,12 +52,14 @@ static void* multithreading_worker_func(void* args) {
                 for (int qj = 0; qj < 16; qj++) {
                     // decode a packed byte into two int8 in the range of (-8, 7)
                     uint8_t packed_int4_0 = w_int4[qj];
-                    signed char w_de_0 = (packed_int4_0 & 0x0F) - 8.0;
-                    signed char w_de_16 = (packed_int4_0 >> 4) - 8.0;
+                    int8_t w_de_0 = (packed_int4_0 & 0x0F) - 8;
+                    int8_t w_de_16 = (packed_int4_0 >> 4) - 8;
+
                     // int8 multiply and accumulate operation
                     intermediate_sum += a_int8[qj] * w_de_0;
                     intermediate_sum += a_int8[qj + 16] * w_de_16;
                 }
+
                 // dequantize the sum into floating point
                 acc += (float)intermediate_sum * s_a * s_w;
                 ch += block_size;
@@ -63,6 +68,7 @@ static void* multithreading_worker_func(void* args) {
                 // scales of the second block
                 float s_w_2nd = params->scales[(col * k + ch) / block_size + 1];
                 float s_a_2nd = params->A_scales[(row * k + ch) / block_size + 1];
+
                 // order of weights with QM_x86:
                 // origin order: (w0,w1), (w2,w3), (w4,w5), (w6,w7), (w8, w9), ... (w62,w63)
                 // QM_ARM order: (w0,w32),(w1,w33),(w2,w34),(w3,w35),(w4, w36),... (w31,w63)
@@ -78,15 +84,18 @@ static void* multithreading_worker_func(void* args) {
                 for (int qj = 0; qj < 32; qj++) {
                     // decode a packed byte into two int8 in the range of (-8, 7)
                     uint8_t packed_int4_0 = w_int4[qj];
-                    signed char w_de_0 = (packed_int4_0 & 0x0F) - 8.0;
-                    signed char w_de_16 = (packed_int4_0 >> 4) - 8.0;
+                    int8_t w_de_0 = (packed_int4_0 & 0x0F) - 8;
+                    int8_t w_de_16 = (packed_int4_0 >> 4) - 8;
+
                     // int8 multiply and accumulate operation
                     intermediate_sum += a_int8[qj] * w_de_0;
                     intermediate_sum_2nd += a_int8[qj + 32] * w_de_16;
                 }
+
                 // dequantize the sum into floating point
                 acc += (float)intermediate_sum * s_a * s_w;
                 acc += (float)intermediate_sum_2nd * s_a_2nd * s_w_2nd;
+                
                 ch += block_size * 2;
 #endif
             }
@@ -109,8 +118,18 @@ void MatmulOperator::mat_mul_multithreading(struct matmul_params* params) {
     pthread_t thread_pool[num_thread];
     struct multithreading_thread_args threads_args[num_thread];
 
-    // TODO: Thread creation
+    // Thread creation
+    for (int t = 0; t < num_thread; t++) {
+        threads_args[t].params = params;
+        threads_args[t].start = t * (n / num_thread);
+        threads_args[t].end = (t + 1) * (n / num_thread);
+        
+        pthread_create(&thread_pool[t], NULL, multithreading_worker_func, &threads_args[t]);
+    }
 
-    // TODO: Join threads
+    // Join threads
+    for (int t = 0; t < num_thread; t++) {
+        pthread_join(thread_pool[t], NULL);
+    }
 };
 }  // namespace matmul
